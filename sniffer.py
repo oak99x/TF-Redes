@@ -2,11 +2,12 @@ import socket
 import struct
 import binascii
 import time
+import sys
 
 # Definir constantes
-ICMP_THRESHOLD = 50  # Número de pacotes ICMP para acionar um aviso
+ICMP_THRESHOLD = 100  # Número de pacotes ICMP para acionar um aviso
 ARP_THRESHOLD = 5     # Número de pacotes ARP Spoofing para acionar um aviso
-TIME_INTERVAL = 20    # Intervalo de tempo em segundos para contagem dos pacotes
+TIME_INTERVAL = 10    # Intervalo de tempo em segundos para contagem dos pacotes
 
 # Inicializar variáveis
 icmp_packet_count = 0
@@ -107,6 +108,9 @@ def sniffer():
             # Chamar a função para analisar o cabeçalho Ethernet e obter informações importantes
             dest_mac, src_mac, eth_proto, data = parse_ethernet_header(raw_data)
 
+            # tabela de monitoramento - cache para todos os pacotes passados na rede
+            # ip request - ip replay ok
+            # nada       - ip replay estranho (ja começa o monitoramento com mais acerto)
             if eth_proto == 0x0806:  # ARP
                 opcode, sender_mac, sender_ip, target_mac, target_ip = parse_arp_packet(data)
 
@@ -127,25 +131,14 @@ def sniffer():
                 version, ihl, ttl, protocol, src_ip, dest_ip, transport_data = parse_ip_packet(data)
 
                 # Verificar se o pacote é do tipo ICMP
+                # Abrir para ver opcode request e replay - como no arp
+                # incrementar só se o request for do mesmo endereço/maquina
                 if protocol == 1:
-                    print("ICMP")
+                    #print("ICMP")
                     # Exibir uma mensagem indicando a detecção de um pacote ICMP
                     # print(f"Pacote ICMP detectado de {src_ip} para {dest_ip}")
                     # Lógica de detecção de ICMP Flooding
                     icmp_packet_count += 1
-
-                # # Verificar se o pacote é do tipo TCP
-                # elif protocol == 6:
-                #     print("TCP")
-                #     # Chamar a função para analisar o cabeçalho TCP e obter informações
-                #     src_port, dest_port, sequence_number, ack_number, flags, app_data = parse_tcp_packet(transport_data)
-
-                #     # Verificar se é um pacote TCP SYN (início da conexão)
-                #     if flags & 0x02 != 0:
-                #         # Exibir uma mensagem indicando a detecção de um pacote TCP SYN
-                #         # print(f"TCP SYN Packet detectado de {src_ip}:{src_port} para {dest_ip}:{dest_port}")
-                #         # Lógica de detecção de ARP Spoofing
-                #         arp_packet_count += 1
 
             # Verificar se o intervalo de tempo definido foi atingido
             if time.time() - start_time >= TIME_INTERVAL:
@@ -154,12 +147,15 @@ def sniffer():
                     # Gerar um aviso indicando a detecção de um ataque ICMP Flooding
                     print(f"Ataque ICMP Flooding detectado! {icmp_packet_count} pacotes ICMP em {TIME_INTERVAL} segundos. Gerando aviso...")
                     # Aqui você pode implementar a lógica para gerar um aviso ou realizar outras ações.
+                    #sys.exit(1)
+
 
                 # Verificar se o número de pacotes ARP Spoofing excede o limite
                 if arp_packet_count >= ARP_THRESHOLD:
                     # Gerar um aviso indicando a detecção de um ataque ARP Spoofing
                     print(f"Ataque ARP Spoofing detectado! {arp_packet_count} pacotes ARP Spoofing em {TIME_INTERVAL} segundos. Gerando aviso...")
                     # Aqui você pode implementar a lógica para gerar um aviso ou realizar outras ações.
+                    #sys.exit(1)
 
                 # Reiniciar as variáveis para o próximo intervalo de tempo
                 icmp_packet_count = 0
