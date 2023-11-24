@@ -15,6 +15,9 @@ arp_packet_count = 0
 arp_cache = {}
 start_time = time.time()
 
+arp_table = {}  # Tabela para monitorar pacotes ARP
+icmp_table = {} # Tabela para monitorar pacotes ICMP
+
 
 # Função para analisar pacotes Ethernet
 def parse_ethernet_header(data):
@@ -67,21 +70,50 @@ def parse_ip_packet(data):
     # Retornar informações extraídas e os dados restantes do pacote após o cabeçalho IP
     return version, ihl, ttl, protocol, src_ip, dest_ip, data[ihl * 4:]
 
+# Função para analisar pacotes ICMP
+def parse_icmp_packet(data, src_ip):
+    icmp_header = struct.unpack('!BBHHH', data[:8])
+    icmp_type = icmp_header[0]
+
+    if icmp_type == 8:  # ICMP Echo Request
+        # Verificar se é do mesmo endereço/maquina
+        if src_ip in icmp_table:
+            icmp_table[src_ip]+= 1
+        else:
+            # Se não for do mesmo endereço, adiciona à tabela
+            icmp_table[src_ip] = 1
+    
+    # Esse trecho vai para o arp
+    # if icmp_type == 8:  # ICMP Echo Request
+    #     # Verificar se é do mesmo endereço/maquina
+    #     if src_ip in icmp_table:
+    #         icmp_table[src_ip]['request_count'] += 1
+    #     else:
+    #         # Se não for do mesmo endereço, adiciona à tabela
+    #         icmp_table[src_ip] = {'request_count': 1, 'replay_count': 0}
+    # elif icmp_type == 0:  # ICMP Echo Reply
+    #     # Incrementar o contador de replay
+    #     if src_ip in icmp_table:
+    #         icmp_table[src_ip]['replay_count'] += 1
+    #     else:
+    #         # Ponto de estranheza
+    #         # Se não for do mesmo endereço, adiciona à tabela
+    #         icmp_table[src_ip] = {'request_count': 0, 'replay_count': 1}
 
 # Função para analisar pacotes TCP
-def parse_tcp_packet(data):
-    # Desempacotar os primeiros 20 bytes do cabeçalho TCP
-    tcp_header = struct.unpack('!HHLLBBHHH', data[:20])
+# def parse_tcp_packet(data):
+#     # Desempacotar os primeiros 20 bytes do cabeçalho TCP
+#     tcp_header = struct.unpack('!HHLLBBHHH', data[:20])
 
-    # Obter informações do cabeçalho TCP
-    src_port = tcp_header[0]  # Porta de origem
-    dest_port = tcp_header[1]  # Porta de destino
-    sequence_number = tcp_header[2]  # Número de sequência
-    ack_number = tcp_header[3]  # Número de confirmação
-    flags = tcp_header[5]  # Flags do TCP
+#     # Obter informações do cabeçalho TCP
+#     src_port = tcp_header[0]  # Porta de origem
+#     dest_port = tcp_header[1]  # Porta de destino
+#     sequence_number = tcp_header[2]  # Número de sequência
+#     ack_number = tcp_header[3]  # Número de confirmação
+#     flags = tcp_header[5]  # Flags do TCP
 
-    # Retornar informações extraídas e os dados restantes do pacote após o cabeçalho TCP
-    return src_port, dest_port, sequence_number, ack_number, flags, data[20:]
+#     # Retornar informações extraídas e os dados restantes do pacote após o cabeçalho TCP
+#     return src_port, dest_port, sequence_number, ack_number, flags, data[20:]
 
 
 # Função principal para capturar e analisar pacotes TCP
@@ -138,8 +170,8 @@ def sniffer():
                     # Exibir uma mensagem indicando a detecção de um pacote ICMP
                     # print(f"Pacote ICMP detectado de {src_ip} para {dest_ip}")
                     # Lógica de detecção de ICMP Flooding
-                    icmp_packet_count += 1
-
+                    parse_icmp_packet(transport_data, src_ip)
+                    
             # Verificar se o intervalo de tempo definido foi atingido
             if time.time() - start_time >= TIME_INTERVAL:
                 # Verificar se o número de pacotes ICMP excede o limite
