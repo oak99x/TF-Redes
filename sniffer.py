@@ -10,7 +10,6 @@ ARP_THRESHOLD = 3     # Número de pacotes ARP Spoofing para acionar um aviso
 TIME_INTERVAL = 10    # Intervalo de tempo em segundos para contagem dos pacotes
 
 # Inicializar variáveis
-arp_cache = {}
 arp_table = {}  # Tabela para monitorar pacotes ARP
 icmp_table = {} # Tabela para monitorar pacotes ICMP
 start_time = time.time()
@@ -59,28 +58,19 @@ def parse_arp_packet(data):
             # Verificar se o número de pacotes de requests excede o limite
             if arp_table[key]['replay_count'] < arp_table[key]['request_count'] and arp_table[key]['replay_count'] >= ARP_THRESHOLD:
                 print(f"Ataque ARP Spoofing detectado! {arp_table[key]['replay_count']} pacotes ARP Spoofing em {(time.time() - start_time)} segundos.")
+                
+                # Imprimir chaves e valores
+                for key, values in arp_table.items():
+                    print(f'{key}: {values}')
+                
+                reset()
+                sys.exit(1)
        
     else:
         # Adicionar uma nova entrada ao dicionário
         if opcode == 1:  # ARP Request
             arp_table[key] = {'request_count': 1, 'replay_count': 0}
         if opcode == 2:  # ARP Reply
-            arp_table[key] = {'request_count': 0, 'replay_count': 1}
-
-    if opcode == 1:  # ARP Request
-        # Verificar se é do mesmo endereço/maquina
-        if key in arp_table:
-            arp_table[key]['request_count'] += 1
-        else:
-            # Se não for do mesmo endereço, adiciona à tabela
-            arp_table[key] = {'request_count': 1, 'replay_count': 0}
-    elif opcode == 2:  # ARP Reply
-        # Incrementar o contador de replay
-        if key in arp_table:
-            arp_table[key]['replay_count'] += 1
-        else:
-            # Ponto de estranheza
-            # Se não for do mesmo endereço, adiciona à tabela
             arp_table[key] = {'request_count': 0, 'replay_count': 1}
 
 
@@ -116,15 +106,27 @@ def parse_icmp_packet(data, src_ip):
             icmp_table[src_ip]+= 1
             # Verificar se o número de pacotes de requests excede o limite
             if icmp_table[src_ip] >= ICMP_THRESHOLD:
-                 print(f"Ataque ICMP Flooding detectado! {src_ip} pacotes ICMP em {(time.time() - start_time)} segundos.")
+                print(f"Ataque ICMP Flooding detectado! {src_ip} pacotes ICMP em {(time.time() - start_time)} segundos.")
+                
+                # Imprimir chaves e valores
+                for key, values in icmp_table.items():
+                    print(f'{key}: {values}')
+                
+                reset()
+                sys.exit(1)
         else:
             # Se não for do mesmo endereço, adiciona à tabela
             icmp_table[src_ip] = 1
 
+def reset():
+    global icmp_table, arp_table, start_time
+    # Reiniciar as variáveis para o próximo intervalo de tempo
+    arp_table = {}  # Tabela para monitorar pacotes ARP
+    icmp_table = {} # Tabela para monitorar pacotes ICMP
+    start_time = time.time()
+
 # Função principal para capturar e analisar pacotes TCP
 def sniffer():
-    global icmp_table, arp_table, start_time
-
     # O uso de socket.AF_PACKET com socket.SOCK_RAW e socket.ntohs(3) é apropriado quando se deseja trabalhar
     # com pacotes de rede brutos na camada de enlace, incluindo informações além do nível de transporte (como TCP ou UDP). 
     # Essa abordagem é comumente utilizada para a construção de ferramentas de análise de rede de baixo nível, como sniffers.
@@ -174,17 +176,15 @@ def sniffer():
                         print(f"Ataque ICMP Flooding detectado! {count} pacotes ICMP em {TIME_INTERVAL} segundos.")
                         #sys.exit(1)
 
+                # Verificar se tem um endereço na tabela de arp que o número de pacotes de replay excede o limite
+                for key, count in arp_table.items():
+                    if arp_table[key]['replay_count'] < arp_table[key]['request_count'] and arp_table[key]['replay_count'] >= ARP_THRESHOLD:
+                        # Aqui podemos implementar a lógica para gerar um aviso ou realizar outras ações.
+                        print(f"Ataque ARP Spoofing detectado! {arp_table[key]['replay_count']} pacotes ARP Spoofing em {TIME_INTERVAL} segundos.")
+                        #sys.exit(1)
 
-                # Verificar se o número de pacotes ARP Spoofing excede o limite
-                if arp_packet_count >= ARP_THRESHOLD:
-                    # Aqui podemos implementar a lógica para gerar um aviso ou realizar outras ações.
-                    print(f"Ataque ARP Spoofing detectado! {arp_packet_count} pacotes ARP Spoofing em {TIME_INTERVAL} segundos.")
-                    #sys.exit(1)
+                reset()
 
-                # Reiniciar as variáveis para o próximo intervalo de tempo
-                arp_table = {}  # Tabela para monitorar pacotes ARP
-                icmp_table = {} # Tabela para monitorar pacotes ICMP
-                start_time = time.time()
     except KeyboardInterrupt:
             print("Sniffer encerrado.")
 
