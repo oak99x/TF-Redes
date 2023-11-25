@@ -6,17 +6,14 @@ import sys
 
 # Definir constantes
 ICMP_THRESHOLD = 100  # Número de pacotes ICMP para acionar um aviso
-ARP_THRESHOLD = 5     # Número de pacotes ARP Spoofing para acionar um aviso
+ARP_THRESHOLD = 3     # Número de pacotes ARP Spoofing para acionar um aviso
 TIME_INTERVAL = 10    # Intervalo de tempo em segundos para contagem dos pacotes
 
 # Inicializar variáveis
-icmp_packet_count = 0
-arp_packet_count = 0
 arp_cache = {}
-start_time = time.time()
-
 arp_table = {}  # Tabela para monitorar pacotes ARP
 icmp_table = {} # Tabela para monitorar pacotes ICMP
+start_time = time.time()
 
 
 # Função para analisar pacotes Ethernet
@@ -37,6 +34,8 @@ def parse_ethernet_header(data):
     return dest_mac, src_mac, proto, data[14:]
 
 def parse_arp_packet(data):
+    global arp_table
+
     arp_header = struct.unpack('!HHBBH6s4s6s4s', data[:28])
     hardware_type = arp_header[0]
     protocol_type = arp_header[1]
@@ -48,7 +47,41 @@ def parse_arp_packet(data):
     target_mac = ':'.join(f"{byte:02x}" for byte in arp_header[7])
     target_ip = socket.inet_ntoa(arp_header[8])
 
-    return opcode, sender_mac, sender_ip, target_mac, target_ip
+    # Usando uma tupla como chave
+    key = (sender_ip, sender_mac)
+
+    # Verificando se a tupla já existe no dicionário
+    if key in arp_table:
+        if opcode == 1:  # ARP Request
+            arp_table[key]['request_count'] += 1
+        if opcode == 2:  # ARP Reply
+            arp_table[key]['replay_count'] += 1
+            # Verificar se o número de pacotes de requests excede o limite
+            if arp_table[key]['replay_count'] < arp_table[key]['request_count'] and arp_table[key]['replay_count'] >= ARP_THRESHOLD:
+                print(f"Ataque ARP Spoofing detectado! {arp_table[key]['replay_count']} pacotes ARP Spoofing em {(time.time() - start_time)} segundos.")
+       
+    else:
+        # Adicionar uma nova entrada ao dicionário
+        if opcode == 1:  # ARP Request
+            arp_table[key] = {'request_count': 1, 'replay_count': 0}
+        if opcode == 2:  # ARP Reply
+            arp_table[key] = {'request_count': 0, 'replay_count': 1}
+
+    if opcode == 1:  # ARP Request
+        # Verificar se é do mesmo endereço/maquina
+        if key in arp_table:
+            arp_table[key]['request_count'] += 1
+        else:
+            # Se não for do mesmo endereço, adiciona à tabela
+            arp_table[key] = {'request_count': 1, 'replay_count': 0}
+    elif opcode == 2:  # ARP Reply
+        # Incrementar o contador de replay
+        if key in arp_table:
+            arp_table[key]['replay_count'] += 1
+        else:
+            # Ponto de estranheza
+            # Se não for do mesmo endereço, adiciona à tabela
+            arp_table[key] = {'request_count': 0, 'replay_count': 1}
 
 
 # Função para analisar pacotes IP
@@ -72,6 +105,8 @@ def parse_ip_packet(data):
 
 # Função para analisar pacotes ICMP
 def parse_icmp_packet(data, src_ip):
+    global icmp_table
+
     icmp_header = struct.unpack('!BBHHH', data[:8])
     icmp_type = icmp_header[0]
 
@@ -79,46 +114,16 @@ def parse_icmp_packet(data, src_ip):
         # Verificar se é do mesmo endereço/maquina
         if src_ip in icmp_table:
             icmp_table[src_ip]+= 1
+            # Verificar se o número de pacotes de requests excede o limite
+            if icmp_table[src_ip] >= ICMP_THRESHOLD:
+                 print(f"Ataque ICMP Flooding detectado! {src_ip} pacotes ICMP em {(time.time() - start_time)} segundos.")
         else:
             # Se não for do mesmo endereço, adiciona à tabela
             icmp_table[src_ip] = 1
-    
-    # Esse trecho vai para o arp
-    # if icmp_type == 8:  # ICMP Echo Request
-    #     # Verificar se é do mesmo endereço/maquina
-    #     if src_ip in icmp_table:
-    #         icmp_table[src_ip]['request_count'] += 1
-    #     else:
-    #         # Se não for do mesmo endereço, adiciona à tabela
-    #         icmp_table[src_ip] = {'request_count': 1, 'replay_count': 0}
-    # elif icmp_type == 0:  # ICMP Echo Reply
-    #     # Incrementar o contador de replay
-    #     if src_ip in icmp_table:
-    #         icmp_table[src_ip]['replay_count'] += 1
-    #     else:
-    #         # Ponto de estranheza
-    #         # Se não for do mesmo endereço, adiciona à tabela
-    #         icmp_table[src_ip] = {'request_count': 0, 'replay_count': 1}
-
-# Função para analisar pacotes TCP
-# def parse_tcp_packet(data):
-#     # Desempacotar os primeiros 20 bytes do cabeçalho TCP
-#     tcp_header = struct.unpack('!HHLLBBHHH', data[:20])
-
-#     # Obter informações do cabeçalho TCP
-#     src_port = tcp_header[0]  # Porta de origem
-#     dest_port = tcp_header[1]  # Porta de destino
-#     sequence_number = tcp_header[2]  # Número de sequência
-#     ack_number = tcp_header[3]  # Número de confirmação
-#     flags = tcp_header[5]  # Flags do TCP
-
-#     # Retornar informações extraídas e os dados restantes do pacote após o cabeçalho TCP
-#     return src_port, dest_port, sequence_number, ack_number, flags, data[20:]
-
 
 # Função principal para capturar e analisar pacotes TCP
 def sniffer():
-    global icmp_packet_count, arp_packet_count, arp_cache, start_time
+    global icmp_table, arp_table, start_time
 
     # O uso de socket.AF_PACKET com socket.SOCK_RAW e socket.ntohs(3) é apropriado quando se deseja trabalhar
     # com pacotes de rede brutos na camada de enlace, incluindo informações além do nível de transporte (como TCP ou UDP). 
@@ -126,7 +131,6 @@ def sniffer():
     # Por outro lado, socket.AF_INET com socket.SOCK_STREAM é a escolha típica para comunicação de rede no nível de transporte, 
     # especificamente para TCP/IP.
     conn = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(0x0003))
-    #conn.bind(('wlp0s20f3', 0))
 
     try:
         # Loop infinito para receber e analisar pacotes continuamente
@@ -144,18 +148,9 @@ def sniffer():
             # ip request - ip replay ok
             # nada       - ip replay estranho (ja começa o monitoramento com mais acerto)
             if eth_proto == 0x0806:  # ARP
-                opcode, sender_mac, sender_ip, target_mac, target_ip = parse_arp_packet(data)
+                parse_arp_packet(data)
 
-                if opcode == 2:  # ARP Reply
-                    if sender_ip in arp_cache:
-                        if arp_cache[sender_ip] != sender_mac:
-                            print("ARP")
-                            # ARP Spoofing detectado!
-                            # print(f"ARP Spoofing detectado! IP: {sender_ip}, MAC Antigo: {arp_cache[sender_ip]}, MAC Atual: {sender_mac}")
-                            arp_packet_count += 1
-                elif opcode == 1:  # ARP Request
-                    # Atualizar a tabela ARP
-                    arp_cache[sender_ip] = sender_mac
+               
 
             # Verificar se o pacote é do tipo IPv4
             if eth_proto == 0x0800:
@@ -166,33 +161,29 @@ def sniffer():
                 # Abrir para ver opcode request e replay - como no arp
                 # incrementar só se o request for do mesmo endereço/maquina
                 if protocol == 1:
-                    #print("ICMP")
-                    # Exibir uma mensagem indicando a detecção de um pacote ICMP
                     # print(f"Pacote ICMP detectado de {src_ip} para {dest_ip}")
-                    # Lógica de detecção de ICMP Flooding
                     parse_icmp_packet(transport_data, src_ip)
                     
             # Verificar se o intervalo de tempo definido foi atingido
             if time.time() - start_time >= TIME_INTERVAL:
-                # Verificar se o número de pacotes ICMP excede o limite
-                if icmp_packet_count >= ICMP_THRESHOLD:
-                    # Gerar um aviso indicando a detecção de um ataque ICMP Flooding
-                    print(f"Ataque ICMP Flooding detectado! {icmp_packet_count} pacotes ICMP em {TIME_INTERVAL} segundos. Gerando aviso...")
-                    # Aqui você pode implementar a lógica para gerar um aviso ou realizar outras ações.
-                    #sys.exit(1)
+
+                # Verificar se tem um endereço na tabela de icmp que o número de pacotes de requests excede o limite
+                for ip, count in icmp_table.items():
+                    if count >= ICMP_THRESHOLD:
+                        # Aqui podemos implementar a lógica para gerar um aviso ou realizar outras ações.
+                        print(f"Ataque ICMP Flooding detectado! {count} pacotes ICMP em {TIME_INTERVAL} segundos.")
+                        #sys.exit(1)
 
 
                 # Verificar se o número de pacotes ARP Spoofing excede o limite
                 if arp_packet_count >= ARP_THRESHOLD:
-                    # Gerar um aviso indicando a detecção de um ataque ARP Spoofing
-                    print(f"Ataque ARP Spoofing detectado! {arp_packet_count} pacotes ARP Spoofing em {TIME_INTERVAL} segundos. Gerando aviso...")
-                    # Aqui você pode implementar a lógica para gerar um aviso ou realizar outras ações.
+                    # Aqui podemos implementar a lógica para gerar um aviso ou realizar outras ações.
+                    print(f"Ataque ARP Spoofing detectado! {arp_packet_count} pacotes ARP Spoofing em {TIME_INTERVAL} segundos.")
                     #sys.exit(1)
 
                 # Reiniciar as variáveis para o próximo intervalo de tempo
-                icmp_packet_count = 0
-                arp_packet_count = 0
-                arp_cache = {}
+                arp_table = {}  # Tabela para monitorar pacotes ARP
+                icmp_table = {} # Tabela para monitorar pacotes ICMP
                 start_time = time.time()
     except KeyboardInterrupt:
             print("Sniffer encerrado.")
