@@ -1,18 +1,22 @@
 import socket
 import struct
 import binascii
+import netifaces
 import time
 import sys
+import os
+import subprocess
 
 # Definir constantes
 ICMP_THRESHOLD = 100  # Número de pacotes ICMP para acionar um aviso
-ARP_THRESHOLD = 3     # Número de pacotes ARP Spoofing para acionar um aviso
+ARP_THRESHOLD = 5     # Número de pacotes ARP Spoofing para acionar um aviso
 TIME_INTERVAL = 10    # Intervalo de tempo em segundos para contagem dos pacotes
 
 # Inicializar variáveis
 arp_table = {}  # Tabela para monitorar pacotes ARP
 icmp_table = {} # Tabela para monitorar pacotes ICMP
 start_time = time.time()
+info_time = time.time()
 
 # Contadores de pacotes
 arp_request_count = 0
@@ -24,10 +28,52 @@ icmpv6_count = 0
 udp_count = 0
 tcp_count = 0
 
+
 # Códigos ANSI para cores no terminal
 class bcolors:
     WARNING = '\033[91m'
 
+# função para ver algumas coisa estranhas na minha rede
+# a tabela arp estav pegando um ip do gateway default com um mac de outra subrede
+# tal ip e mac enviavam muitos arps replay (sem testar ataque nenhum)
+# isso caia direto no verificação de arp spoof
+# agora não sei se é só na minha rede por ter dois roteadores e 1 atuando como repetidor ou vai acontecer em outras redes
+def gateway_default_and_mac():
+    try:
+        # No Linux, o gateway padrão geralmente está na posição 2 da saída do comando 'ip route'
+        gateways = netifaces.gateways()
+        default_gateway = gateways['default'][netifaces.AF_INET][0]
+
+        #Pega mac estranho que aparece na tabela
+        interface = gateways['default'][netifaces.AF_INET][1]
+        mac_address = netifaces.ifaddresses(interface)[netifaces.AF_LINK][0]['addr']
+
+        print (default_gateway)
+        print (mac_address) # traz uma mac de outra subrede
+        
+        # Dessa foram pega o ip e mac corretos 
+        gateway2 = os.popen("ip route | awk '/default/ { print $3 }'").read().strip()
+        result = subprocess.check_output(["arp", "-a"]).decode("utf-8")
+        lines = result.split('\n')
+        
+        mac_address2 = ""
+        for line in lines:
+            if gateway2 in line:
+                mac_address2 = line.split(' ')[3]
+
+        print (gateway2)
+        print (mac_address2)
+
+        return default_gateway, mac_address
+    except Exception as e:
+        print(f"Erro ao obter o gateway padrão: {e}")
+        return None, None
+
+
+default_gateway, mac_address = gateway_default_and_mac()
+
+
+# Sniffer ==============================================================================================
 
 # Função para analisar pacotes Ethernet
 def parse_ethernet_header(data):
@@ -69,11 +115,10 @@ def parse_arp_packet(data):
             arp_table[key]['replay_count'] += 1
             arp_reply_count +=1
 
-            # Verificar se o número de pacotes de requests excede o limite
-            if arp_table[key]['replay_count'] < arp_table[key]['request_count'] and arp_table[key]['replay_count'] >= ARP_THRESHOLD:
-                print(f"{bcolors.WARNING}Ataque ARP Spoofing detectado! {arp_table[key]['replay_count']} pacotes ARP Spoofing em {(time.time() - start_time)} segundos.{bcolors.WARNING}")
-                print_info()
-                reset()
+            # # Verificar se o número de pacotes de replays excede o limite
+            # if arp_table[key]['replay_count'] > arp_table[key]['request_count'] and arp_table[key]['replay_count'] >= ARP_THRESHOLD:
+            #     print(f"{bcolors.WARNING}Ataque ARP Spoofing detectado! {arp_table[key]['replay_count']} pacotes ARP Spoofing em {(time.time() - start_time)} segundos.{bcolors.WARNING}")
+            #     reset()
        
     else:
         # Adicionar uma nova entrada ao dicionário
@@ -115,11 +160,11 @@ def parse_icmp_packet(data, src_ip):
         # Verificar se é do mesmo endereço/maquina
         if src_ip in icmp_table:
             icmp_table[src_ip]+= 1
-            # Verificar se o número de pacotes de requests excede o limite
-            if icmp_table[src_ip] >= ICMP_THRESHOLD:
-                print(f"{bcolors.WARNING}Ataque ICMP Flooding detectado! {src_ip} pacotes ICMP em {(time.time() - start_time)} segundos.{bcolors.WARNING}")
-                print_info()
-                reset()
+
+            # # Verificar se o número de pacotes de requests excede o limite
+            # if icmp_table[src_ip] >= ICMP_THRESHOLD:
+            #     print(f"{bcolors.WARNING}Ataque ICMP Flooding detectado! {icmp_table[src_ip]} pacotes ICMP em {(time.time() - start_time)} segundos.{bcolors.WARNING}")
+            #     reset()
         else:
             # Se não for do mesmo endereço, adiciona à tabela
             icmp_table[src_ip] = 1
@@ -131,10 +176,11 @@ def reset():
     icmp_table = {} # Tabela para monitorar pacotes ICMP
     start_time = time.time()
 
+
 def print_info():
     # Imprimir estatísticas ao final
         print(f"\nEstatísticas:")
-        print(f"Nível de Enlace: {ethernet_count} pacotes")
+        print(f"Nível de Enlace:")
         print(f"Quantidade de pacotes ARP Request: {arp_request_count}")
         print(f"Quantidade de pacotes ARP Reply: {arp_reply_count}")
         print(f"Nível de Rede:")
@@ -148,7 +194,7 @@ def print_info():
 
 # Função principal para capturar e analisar pacotes TCP
 def sniffer():
-    global ipv4_count, icmp_count, ipv6_count, icmpv6_count, udp_count, tcp_count
+    global ipv4_count, icmp_count, ipv6_count, icmpv6_count, udp_count, tcp_count, info_time
     # O uso de socket.AF_PACKET com socket.SOCK_RAW e socket.ntohs(3) é apropriado quando se deseja trabalhar
     # com pacotes de rede brutos na camada de enlace, incluindo informações além do nível de transporte (como TCP ou UDP). 
     # Essa abordagem é comumente utilizada para a construção de ferramentas de análise de rede de baixo nível, como sniffers.
@@ -168,13 +214,9 @@ def sniffer():
             # Chamar a função para analisar o cabeçalho Ethernet e obter informações importantes
             dest_mac, src_mac, eth_proto, data = parse_ethernet_header(raw_data)
 
-            # tabela de monitoramento - cache para todos os pacotes passados na rede
-            # ip request - ip replay ok
-            # nada       - ip replay estranho (ja começa o monitoramento com mais acerto)
+            # Verificar se o pacote é do tipo ARP
             if eth_proto == 0x0806:  # ARP
                 parse_arp_packet(data)
-
-               
 
             # Verificar se o pacote é do tipo IPv4
             if eth_proto == 0x0800:
@@ -213,7 +255,8 @@ def sniffer():
                     udp_count += 1
                     
                        
-
+            # A verificação de ataques vai se dar só a cada TIME_INTERVAL
+            # Isso ajuda a evitar falsos positivos que podem ocorrer durante a inicialização da rede.
             # Verificar se o intervalo de tempo definido foi atingido
             if time.time() - start_time >= TIME_INTERVAL:
 
@@ -222,16 +265,29 @@ def sniffer():
                     if count >= ICMP_THRESHOLD:
                         # Aqui podemos implementar a lógica para gerar um aviso ou realizar outras ações.
                         print(f"{bcolors.WARNING}Ataque ICMP Flooding detectado! {count} pacotes ICMP em {TIME_INTERVAL} segundos.{bcolors.WARNING}")
-                        #sys.exit(1)
 
                 # Verificar se tem um endereço na tabela de arp que o número de pacotes de replay excede o limite
                 for key, count in arp_table.items():
-                    if arp_table[key]['replay_count'] < arp_table[key]['request_count'] and arp_table[key]['replay_count'] >= ARP_THRESHOLD:
-                        # Aqui podemos implementar a lógica para gerar um aviso ou realizar outras ações.
-                        print(f"{bcolors.WARNING}Ataque ARP Spoofing detectado! {arp_table[key]['replay_count']} pacotes ARP Spoofing em {TIME_INTERVAL} segundos.{bcolors.WARNING}")
-                        #sys.exit(1)
+
+                    # Tdm um mac de outra subrede mas com o mesmo ip fazendo varios arpreplay 
+                    # Essa verifica ção evida detectar logo de cara mas é muito estranho
+                    # não sei se isso é da minha rede ou vai acontecer em outras
+                    if key[1] != mac_address: #verificação devido a uma estranhesa da redde 
+                        if arp_table[key]['replay_count'] > arp_table[key]['request_count'] and arp_table[key]['replay_count'] >= ARP_THRESHOLD:
+                            # Aqui podemos implementar a lógica para gerar um aviso ou realizar outras ações.
+                            print(f"{bcolors.WARNING}Ataque ARP Spoofing detectado! {arp_table[key]['replay_count']} pacotes ARP Spoofing em {TIME_INTERVAL} segundos.{bcolors.WARNING}")
+
                 print_info()
+
+                # Imprimir a tabela ARP
+                print("Tabela ARP:")
+                for entry, counts in arp_table.items():
+                    print(f"{entry}: Request Count = {counts['request_count']}, Replay Count = {counts['replay_count']}")
+                
+                # sys.exit(1)
+                # info_time = time.time()
                 reset()
+                
 
     except KeyboardInterrupt:
             print("Sniffer encerrado.")
