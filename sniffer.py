@@ -14,26 +14,36 @@ arp_table = {}  # Tabela para monitorar pacotes ARP
 icmp_table = {} # Tabela para monitorar pacotes ICMP
 start_time = time.time()
 
+# Contadores de pacotes
+arp_request_count = 0
+arp_reply_count = 0
+ipv4_count = 0
+icmp_count = 0
+ipv6_count = 0
+icmpv6_count = 0
+udp_count = 0
+tcp_count = 0
+
+# Códigos ANSI para cores no terminal
+class bcolors:
+    WARNING = '\033[91m'
+
 
 # Função para analisar pacotes Ethernet
 def parse_ethernet_header(data):
     # Desempacotar os primeiros 14 bytes do pacote Ethernet
     eth_header = struct.unpack('!6s6sH', data[:14])
-
     # Extrair o endereço MAC de destino e converter para formato legível
     dest_mac = binascii.hexlify(eth_header[0]).decode('utf-8')
-
     # Extrair o endereço MAC de origem e converter para formato legível
     src_mac = binascii.hexlify(eth_header[1]).decode('utf-8')
-
     # Extrair o tipo de protocolo da camada de rede e converter para o formato correto
     proto = eth_header[2]
-
     # Retornar as informações extraídas e os dados restantes do pacote
     return dest_mac, src_mac, proto, data[14:]
 
 def parse_arp_packet(data):
-    global arp_table
+    global arp_table, arp_request_count, arp_reply_count
 
     arp_header = struct.unpack('!HHBBH6s4s6s4s', data[:28])
     hardware_type = arp_header[0]
@@ -53,25 +63,26 @@ def parse_arp_packet(data):
     if key in arp_table:
         if opcode == 1:  # ARP Request
             arp_table[key]['request_count'] += 1
+            arp_request_count +=1
+
         if opcode == 2:  # ARP Reply
             arp_table[key]['replay_count'] += 1
+            arp_reply_count +=1
+
             # Verificar se o número de pacotes de requests excede o limite
             if arp_table[key]['replay_count'] < arp_table[key]['request_count'] and arp_table[key]['replay_count'] >= ARP_THRESHOLD:
-                print(f"Ataque ARP Spoofing detectado! {arp_table[key]['replay_count']} pacotes ARP Spoofing em {(time.time() - start_time)} segundos.")
-                
-                # Imprimir chaves e valores
-                for key, values in arp_table.items():
-                    print(f'{key}: {values}')
-                
+                print(f"{bcolors.WARNING}Ataque ARP Spoofing detectado! {arp_table[key]['replay_count']} pacotes ARP Spoofing em {(time.time() - start_time)} segundos.{bcolors.WARNING}")
+                print_info()
                 reset()
-                sys.exit(1)
        
     else:
         # Adicionar uma nova entrada ao dicionário
         if opcode == 1:  # ARP Request
             arp_table[key] = {'request_count': 1, 'replay_count': 0}
+            arp_request_count +=1
         if opcode == 2:  # ARP Reply
             arp_table[key] = {'request_count': 0, 'replay_count': 1}
+            arp_reply_count +=1
 
 
 # Função para analisar pacotes IP
@@ -106,14 +117,9 @@ def parse_icmp_packet(data, src_ip):
             icmp_table[src_ip]+= 1
             # Verificar se o número de pacotes de requests excede o limite
             if icmp_table[src_ip] >= ICMP_THRESHOLD:
-                print(f"Ataque ICMP Flooding detectado! {src_ip} pacotes ICMP em {(time.time() - start_time)} segundos.")
-                
-                # Imprimir chaves e valores
-                for key, values in icmp_table.items():
-                    print(f'{key}: {values}')
-                
+                print(f"{bcolors.WARNING}Ataque ICMP Flooding detectado! {src_ip} pacotes ICMP em {(time.time() - start_time)} segundos.{bcolors.WARNING}")
+                print_info()
                 reset()
-                sys.exit(1)
         else:
             # Se não for do mesmo endereço, adiciona à tabela
             icmp_table[src_ip] = 1
@@ -125,8 +131,24 @@ def reset():
     icmp_table = {} # Tabela para monitorar pacotes ICMP
     start_time = time.time()
 
+def print_info():
+    # Imprimir estatísticas ao final
+        print(f"\nEstatísticas:")
+        print(f"Nível de Enlace: {ethernet_count} pacotes")
+        print(f"Quantidade de pacotes ARP Request: {arp_request_count}")
+        print(f"Quantidade de pacotes ARP Reply: {arp_reply_count}")
+        print(f"Nível de Rede:")
+        print(f"  Quantidade de pacotes IPv4: {ipv4_count}")
+        print(f"  Quantidade de pacotes ICMP: {icmp_count}")
+        print(f"  Quantidade de pacotes IPv6: {ipv6_count}")
+        print(f"  Quantidade de pacotes ICMPv6: {icmpv6_count}")
+        print(f"Nível de Transporte:")
+        print(f"  Quantidade de pacotes UDP: {udp_count}")
+        print(f"  Quantidade de pacotes TCP: {tcp_count}")
+
 # Função principal para capturar e analisar pacotes TCP
 def sniffer():
+    global ipv4_count, icmp_count, ipv6_count, icmpv6_count, udp_count, tcp_count
     # O uso de socket.AF_PACKET com socket.SOCK_RAW e socket.ntohs(3) é apropriado quando se deseja trabalhar
     # com pacotes de rede brutos na camada de enlace, incluindo informações além do nível de transporte (como TCP ou UDP). 
     # Essa abordagem é comumente utilizada para a construção de ferramentas de análise de rede de baixo nível, como sniffers.
@@ -156,16 +178,42 @@ def sniffer():
 
             # Verificar se o pacote é do tipo IPv4
             if eth_proto == 0x0800:
+
+                ipv4_count +=1
+
+                # Chamar a função para analisar o cabeçalho IP e obter informações
+                version, ihl, ttl, protocol, src_ip, dest_ip, transport_data = parse_ip_packet(data)
+
+                if protocol == 1:
+                    icmp_count +=1
+                    parse_icmp_packet(transport_data, src_ip)
+                
+                if protocol == 6:
+                    tcp_count  +=1
+
+                if protocol == 17:
+                    udp_count += 1
+
+            # Verificar se o pacote é do tipo IPv6
+            if eth_proto == 0x86DD:
+
+                ipv6_count +=1
+
                 # Chamar a função para analisar o cabeçalho IP e obter informações
                 version, ihl, ttl, protocol, src_ip, dest_ip, transport_data = parse_ip_packet(data)
 
                 # Verificar se o pacote é do tipo ICMP
-                # Abrir para ver opcode request e replay - como no arp
-                # incrementar só se o request for do mesmo endereço/maquina
-                if protocol == 1:
-                    # print(f"Pacote ICMP detectado de {src_ip} para {dest_ip}")
-                    parse_icmp_packet(transport_data, src_ip)
+                if protocol == 58:  # ICMPv6 tem número de protocolo 58
+                    icmpv6_count +=1
+
+                if protocol == 6:
+                    tcp_count  +=1
+
+                if protocol == 17:
+                    udp_count += 1
                     
+                       
+
             # Verificar se o intervalo de tempo definido foi atingido
             if time.time() - start_time >= TIME_INTERVAL:
 
@@ -173,16 +221,16 @@ def sniffer():
                 for ip, count in icmp_table.items():
                     if count >= ICMP_THRESHOLD:
                         # Aqui podemos implementar a lógica para gerar um aviso ou realizar outras ações.
-                        print(f"Ataque ICMP Flooding detectado! {count} pacotes ICMP em {TIME_INTERVAL} segundos.")
+                        print(f"{bcolors.WARNING}Ataque ICMP Flooding detectado! {count} pacotes ICMP em {TIME_INTERVAL} segundos.{bcolors.WARNING}")
                         #sys.exit(1)
 
                 # Verificar se tem um endereço na tabela de arp que o número de pacotes de replay excede o limite
                 for key, count in arp_table.items():
                     if arp_table[key]['replay_count'] < arp_table[key]['request_count'] and arp_table[key]['replay_count'] >= ARP_THRESHOLD:
                         # Aqui podemos implementar a lógica para gerar um aviso ou realizar outras ações.
-                        print(f"Ataque ARP Spoofing detectado! {arp_table[key]['replay_count']} pacotes ARP Spoofing em {TIME_INTERVAL} segundos.")
+                        print(f"{bcolors.WARNING}Ataque ARP Spoofing detectado! {arp_table[key]['replay_count']} pacotes ARP Spoofing em {TIME_INTERVAL} segundos.{bcolors.WARNING}")
                         #sys.exit(1)
-
+                print_info()
                 reset()
 
     except KeyboardInterrupt:
